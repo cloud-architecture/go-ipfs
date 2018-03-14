@@ -1,0 +1,175 @@
+import groovy.transform.Field
+
+def env = ['CI=true']
+def test = 'go test -v ./...'
+
+def build_platforms = [
+  ['windows', '386'],
+  ['windows', 'amd64'],
+
+  ['linux', 'arm'],
+  ['linux', 'arm64'],
+  ['linux', '386'],
+  ['linux', 'amd64'],
+
+  ['darwin', '386'],
+  ['darwin', 'amd64'],
+
+  ['freebsd', 'amd64']
+]
+
+def dexec = 'docker exec'
+
+ansiColor('xterm') { withEnv(['TERM=xterm-color']){ timeout(time: 20, unit: 'MINUTES'){
+
+
+  stage('Checks') {
+    parallel(
+      'go fmt': {
+        node(label: 'linux') {
+          def root = tool name: '1.9.2', type: 'go'
+          def jobNameArr = "${JOB_NAME}"
+          def jobName = jobNameArr.split("/")[0..1].join("/").toLowerCase()
+          def originalWs = "${WORKSPACE}"
+          ws("${originalWs}/src/github.com/${jobName}") {
+              def goEnv = ["GOROOT=${root}", "GOPATH=${originalWs}", "PATH=$PATH:${root}/bin:${originalWs}/bin"]
+              withEnv(goEnv + env) {
+                checkout scm
+                sh 'make test_go_fmt'
+              }
+          }
+        }
+      },
+      'go build': {
+        node(label: 'linux') {
+          // due to bug in Jenkins (JENKINS-38268) names of closure params have to be different
+          def root = tool name: '1.9.2', type: 'go'
+          def jobNameArr = "${JOB_NAME}"
+          def jobName = jobNameArr.split("/")[0..1].join("/").toLowerCase()
+          def originalWs = "${WORKSPACE}"
+          ws("${originalWs}/src/github.com/${jobName}") {
+            def goEnv = ["GOROOT=${root}", "GOPATH=${originalWs}", "PATH=$PATH:${root}/bin:${originalWs}/bin"]
+            withEnv(goEnv + env) {
+              checkout scm
+              sh "make cmd/ipfs/ipfs"
+              sh "cp cmd/ipfs/ipfs cmd/ipfs/dist; cd cmd/ipfs/dist; tar -czvf ../go-ipfs_linux-amd64.tar.gz ."
+              sh "cp cmd/ipfs/go-ipfs_linux-amd64.tar.gz go-ipfs_linux-amd64-${env.BUILD_NUMBER}.tar.gz"
+              archiveArtifacts artifacts: "go-ipfs_linux-amd64-${env.BUILD_NUMBER}.tar.gz", fingerprint: true
+            }
+          }
+        }
+      }
+    )
+  }
+
+  stage('Tests') {
+    parallel(
+      windows: {
+        node(label: 'windows') {
+          def root = tool name: '1.9.2', type: 'go'
+          def jobNameArr = "${JOB_NAME}"
+          def jobName = jobNameArr.split("/")[0..1].join("\\\\").toLowerCase()
+          def originalWs = "${WORKSPACE}"
+          ws("${originalWs}\\src\\github.com\\${jobName}") {
+            def goEnv = ["GOROOT=${root}", "GOPATH=${originalWs}", "PATH=$PATH;${root}\\bin;${originalWs}\\bin"]
+            withEnv(goEnv + env) {
+              bat 'go get -v github.com/whyrusleeping/gx'
+              bat 'go get -v github.com/whyrusleeping/gx-go'
+              bat 'go get -v github.com/jstemmer/go-junit-report'
+              checkout scm
+              bat 'gx --verbose install --global'
+              bat 'gx-go rewrite'
+              try {
+                bat test + ' > output & type output'
+                bat 'type output | go-junit-report > junit-report-windows.xml'
+              } catch (err) {
+                throw err
+              } finally {
+                junit allowEmptyResults: true, testResults: 'junit-report-*.xml'
+              }
+            }
+          }
+        }
+      },
+      linux: {
+        node(label: 'linux') {
+          def root = tool name: '1.9.2', type: 'go'
+          def jobNameArr = "${JOB_NAME}"
+          def jobName = jobNameArr.split("/")[0..1].join("/").toLowerCase()
+          def originalWs = "${WORKSPACE}"
+          ws("${originalWs}/src/github.com/${jobName}") {
+            def goEnv = ["GOROOT=${root}", "GOPATH=${originalWs}", "PATH=$PATH:${root}/bin:${originalWs}/bin"]
+            withEnv(goEnv + env) {
+              sh 'go get -v github.com/whyrusleeping/gx github.com/whyrusleeping/gx-go'
+              sh 'go get -v github.com/jstemmer/go-junit-report'
+              checkout scm
+              sh 'gx --verbose install --global'
+              sh 'gx-go rewrite'
+              try {
+                sh test + ' 2>&1 | tee output'
+                sh 'cat output | go-junit-report > junit-report-linux.xml'
+              } catch (err) {
+                throw err
+              } finally {
+                junit allowEmptyResults: true, testResults: 'junit-report-*.xml'
+              }
+            }
+          }
+        }
+      },
+      linuxSharness: {
+        node(label: 'linux') {
+          def root = tool name: '1.9.2', type: 'go'
+          def jobNameArr = "${JOB_NAME}"
+          def jobName = jobNameArr.split("/")[0..1].join("/").toLowerCase()
+          def originalWs = "${WORKSPACE}"
+          ws("${originalWs}/src/github.com/${jobName}") {
+            def goEnv = ["GOROOT=${root}", "GOPATH=${originalWs}", "PATH=$PATH:${root}/bin:${originalWs}/bin"]
+            withEnv(goEnv + env) {
+              sh 'go get -v github.com/whyrusleeping/gx'
+              sh 'go get -v github.com/whyrusleeping/gx-go'
+              sh 'go get -v github.com/jstemmer/go-junit-report'
+              checkout scm
+              sh 'gx --verbose install --global'
+              sh 'gx-go rewrite'
+              try {
+                sh "make -j3 -Otarget test/sharness/test-results/sharness.xml CONTINUE_ON_S_FAILURE=1"
+              } catch (err) {
+                throw err
+              } finally {
+                junit allowEmptyResults: true, testResults: 'test/sharness/test-results/sharness.xml'
+              }
+            }
+          }
+        }
+      },
+      macOS: {
+        node(label: 'macos') {
+          def root = tool name: '1.9.2', type: 'go'
+          def jobNameArr = "${JOB_NAME}"
+          def jobName = jobNameArr.split("/")[0..1].join("/").toLowerCase()
+          def originalWs = "${WORKSPACE}"
+          ws("${originalWs}/src/github.com/${jobName}") {
+            def goEnv = ["GOROOT=${root}", "GOPATH=${originalWs}", "PATH=$PATH:${root}/bin:${originalWs}/bin"]
+            withEnv(goEnv + env) {
+              sh 'go get -v github.com/whyrusleeping/gx'
+              sh 'go get -v github.com/whyrusleeping/gx-go'
+              sh 'go get -v github.com/jstemmer/go-junit-report'
+              checkout scm
+              sh 'gx --verbose install --global'
+              sh 'gx-go rewrite'
+              try {
+                sh test + ' 2>&1 | tee output'
+                sh 'cat output | go-junit-report > junit-report-macos.xml'
+              } catch (err) {
+                throw err
+              } finally {
+                junit 'junit-report-*.xml'
+              }
+            }
+          }
+        }
+      }
+    )
+  }
+}}}
